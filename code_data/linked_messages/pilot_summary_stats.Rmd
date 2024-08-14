@@ -1,5 +1,5 @@
 ---
-title: "correspondence_pilot_summary"
+title: "Correspondence Pilot Summary"
 output: html_document
 date: "2024-08-14"
 ---
@@ -415,6 +415,41 @@ df |>
     )
 ```
 
+Response rate by type. Suggestive evidence that Contact sheets get higher responses?
+
+```{r}
+
+# Response rate by how we reached out to them
+df |> 
+  group_by(use_email_or_contact_sheet) |> 
+  summarise(response_mean = sum(response_dummy, na.rm = TRUE)/n()) |>
+  ungroup() |> 
+  ggplot(aes(x = use_email_or_contact_sheet, y = response_mean)) +
+  geom_col() + 
+  labs(title = "Response Rate by Form of Contact",
+       y = "Response Rate")
+
+
+feols(response_dummy ~ use_email_or_contact_sheet, df |> distinct(unique_id, .keep_all = TRUE)) |> 
+  summary()
+
+```
+
+Our responses mainly come in the form of emails.
+
+```{r}
+df |> 
+  filter(response_dummy == 1) |>
+  group_by(correspondence_type) |> 
+  summarise(response_mean = sum(response_dummy)) |>
+  ungroup() |> 
+  ggplot(aes(x = correspondence_type, y = response_mean)) +
+  geom_col() + 
+  labs(title = "Response Rate by Form of Contact",
+       y = "Response Rate")
+
+```
+
 ```{r}
 
 feols(response_dummy ~ race + loan_amount_num + industry + bus_qual, 
@@ -431,7 +466,6 @@ feols(response_num ~ race + loan_amount_num + industry + bus_qual,
   kable()
 
 ```
-
 
 # Text in Messages
 

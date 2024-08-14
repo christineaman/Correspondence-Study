@@ -1,0 +1,459 @@
+---
+title: "correspondence_pilot_summary"
+output: html_document
+date: "2024-08-14"
+---
+
+```{=html}
+<style>
+pre, img, .figure {
+  margin-top: 20px;
+  margin-bottom: 20px;
+}
+</style>
+```
+```{r setup, include=FALSE, echo=FALSE}
+
+rm(list = ls())
+
+# packages and settings
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+
+# your directiory here
+working_dir <- "../../code_data"
+
+library(tidyverse)
+library(openxlsx)
+library(janitor)
+library(kableExtra)
+library(RColorBrewer)
+library(gridExtra)
+library(lubridate)
+library(readxl)
+library(broom)
+library(fixest)
+library(scales)
+library(Hmisc)
+
+# themes for plots
+theme_set(
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+)
+
+```
+
+```{r functions}
+
+# initializing some functions 
+
+pie_chart <- function(df, variable, title) {
+  df_filtered <- df |> 
+    filter(!is.na(!!sym(variable))) |> 
+    count(!!sym(variable)) |> 
+    mutate(perc = n / sum(n) * 100)
+  
+  graph <- ggplot(df_filtered, aes(x = factor(1), y = n, fill = !!sym(variable))) + 
+    geom_bar(stat = "identity", width = 1) + 
+    coord_polar(theta = "y") + 
+    theme_void() +
+    theme(legend.position = "right",
+          plot.title = element_text(hjust = 0.5)) +
+    geom_text(aes(label = paste0(round(perc, 1), "%\n(N=", n, ")")), 
+              position = position_stack(vjust = 0.5))
+  
+  return(graph)
+}
+
+summary_statistics <- function(df, variable, group_by_var = NULL) {
+  # Check if a grouping variable is provided
+  if (!is.null(group_by_var)) {
+    # Group by the specified variable and calculate statistics for each group
+    stats <- df |> 
+      group_by(!!sym(group_by_var)) |> 
+      summarise(
+        Mean = mean(!!sym(variable), na.rm = TRUE),
+        Median = median(!!sym(variable), na.rm = TRUE),
+        `Standard Deviation` = sd(!!sym(variable), na.rm = TRUE),
+        `25th Percentile` = quantile(!!sym(variable), 0.25, na.rm = TRUE),
+        `75th Percentile` = quantile(!!sym(variable), 0.75, na.rm = TRUE),
+        `N` = sum(!is.na(!!sym(variable))),
+        .groups = 'drop'
+      )
+  } else {
+    # Calculate statistics for the entire dataset
+    stats <- df |> 
+      summarise(
+        Mean = mean(!!sym(variable), na.rm = TRUE),
+        Median = median(!!sym(variable), na.rm = TRUE),
+        `Standard Deviation` = sd(!!sym(variable), na.rm = TRUE),
+        `25th Percentile` = quantile(!!sym(variable), 0.25, na.rm = TRUE),
+        `75th Percentile` = quantile(!!sym(variable), 0.75, na.rm = TRUE),
+        `N` = sum(!is.na(!!sym(variable)))
+      )
+  }
+  
+  # Print the table using kable
+  stats |> 
+    kable(digits = 2) |> 
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F)
+}
+
+summarize_categorical <- function(df, variable) {
+  df |> 
+    count(!!sym(variable)) |> 
+    mutate(perc = n / sum(n) * 100) |> 
+    arrange(desc(n)) |> 
+    rename(Count = n, Percentage = perc)
+}
+```
+
+```{r data_loading}
+
+#### BRINGING IN AND CLEANING DATA ####
+
+setwd(working_dir)
+
+df1 <- read.xlsx("linked_messages/input/Linked_Messages_v2_081324.xlsx", sheet = "emails_appended")
+df2 <- read.xlsx("linked_messages/input/Linked_Messages_v2_081324.xlsx", sheet = "vmc_appended")
+
+# getting schedule just to get treatment-related variable for each observation
+#schedule <- read.xlsx("output/pilot_schedule_v7_full.xlsx")
+schedule <- read.xlsx("output/pilot_schedule_v4_to_v12_full_081324.xlsx")
+
+schedule <- schedule |> 
+  mutate(phone_clean = gsub("[^0-9]", "", phone)) |> # creating phone number variable that is just number
+  select(unique_id, name, race, gender, industry, loan_amount_num, loan_amount, message, email, cert, bank_name, bus_qual, years_in_business,
+         phone_clean, use_email_or_contact_sheet, credit_message_dummy, message_days_gap, vpn, time_of_day)
+
+schedule <- schedule |> 
+  distinct(.keep_all = TRUE)
+
+
+# getting actual message record
+record <- read.xlsx("linked_messages/input/submission_recording_081324.xlsx")
+
+### BEGIN TEMPORARY CODE
+# record <- record |> 
+#   distinct(unique_id, .keep_all = TRUE) # note: the distinct command SHOULD be
+### END TEMPORARY CODE
+
+record <- record |> 
+  mutate(date = as.Date(date, origin = "1899-12-30")) |>  # known issue in Excel, it thinks 1900 is a leap year, need to use odd origin
+  filter(message_submitted == "Yes") |>
+  select(unique_id, date) |> 
+  rename(sent_date = date)
+
+# merge proposed schedule with actual record
+submitted_schedule <- left_join(record, schedule, by = "unique_id")
+
+# cleaning up df1
+df1 <- df1 |> 
+  rename(date_time = `date_time.(format:.mm/dd/yyyy.HH:MM.24hour.clock)`,
+         record_link = email_link,
+         transcript = email_transcript) |> 
+  clean_names() |> 
+  mutate(date_time = as.POSIXct(as.numeric(date_time) * 86400, origin = "1899-12-30", tz = "UTC"),
+         correspondence_type = "email") |> 
+  mutate(bank_name_cert = str_trim(bank_name_cert),
+         bank_name = str_trim(str_remove(bank_name_cert, "\\d+$")),
+         cert = as.numeric(str_trim(str_extract(bank_name_cert, "\\d+$")))) |> 
+  arrange(date_time) |>
+  mutate(response_id = paste("email_", row_number()))
+
+# merging on email and cert
+df1m <- submitted_schedule |> 
+  inner_join(df1, by = c("email" = "recipient_email", "cert" = "cert"))
+
+# the values of 'duration' are only correct for the values going to the voicemail
+df2 <- df2 |> 
+  clean_names() |>
+  group_by(call_id) |> 
+  mutate(duration = ifelse(result == "missed", duration[result == "voicemail"], duration)) |> 
+  ungroup() |>
+  rename(record_link = vmc_link,
+         transcript = vmc_transcript) |> 
+  mutate(date_time = as.POSIXct(date_time * 86400, origin = "1899-12-30", tz = "UTC"), # note: 86400 is number of seconds in day
+         correspondence_type = "voicemail") |> 
+  filter(to != "402.0") %>% 
+  mutate(phone_clean = gsub("[^0-9]", "", to)) |>  # creating phone number variable that is just number
+  mutate(bank_name_cert = str_trim(bank_name_cert),
+         bank_name = str_trim(str_remove(bank_name_cert, "\\d+$")),
+         cert = as.numeric(str_trim(str_extract(bank_name_cert, "\\d+$")))) |> 
+  filter(!is.na(bank_name_cert)) |> 
+  arrange(date_time) |> 
+  mutate(response_id = paste("vmc_", row_number()))
+
+# merge df2 with schedule 
+df2m <- submitted_schedule |> 
+  inner_join(df2, by = c("phone_clean", "cert"))
+
+df <- bind_rows(df1m, df2m) |> 
+  select(-bank_name.y) |>
+  rename(bank_name = bank_name.x)
+
+# so far we only have messages that receive a response, now bringing in all other messages 
+messages_w_response <- df |> 
+  distinct(unique_id) |> 
+  pull(unique_id)
+
+df_no_response <- submitted_schedule |> 
+  filter(!unique_id %in% messages_w_response)
+
+df <- bind_rows(df, df_no_response)
+
+df <- df |>
+  select(unique_id, sent_date, bank_name, cert, name, message, transcript, email_transcript_redacted, bank_representative_name,
+         industry, loan_amount_num, correspondence_type, record_link,
+         race, gender, industry, loan_amount_num, loan_amount, use_email_or_contact_sheet, date_time, response_id,
+         credit_message_dummy, message_days_gap, vpn, time_of_day, bus_qual, years_in_business) |>
+  arrange(sent_date) |>
+  rename(response = transcript,
+         response_redacted = email_transcript_redacted) |> 
+  mutate(response_redacted = ifelse(correspondence_type == "voicemail", response, response_redacted)) # for voicemails, just keep the whole thing for the redacted version
+  
+
+# creating variable for the amount of unique messages sent
+df <- df |> 
+  group_by(cert) |> 
+  mutate(messages_amount = n_distinct(unique_id)) |>
+  ungroup()
+
+# making sure we delete duplicate matches between messages and responses 
+df <- df |>   
+  distinct(unique_id, message, date_time, .keep_all = TRUE)
+
+# this should be deleted later (only doing cuz messages havent been linked yet)
+df <- df |>
+  filter(sent_date < as.Date("2024-08-13"))
+
+#write.xlsx(df, "linked_messages/output/linked_messages_merged_081224.xlsx")
+
+# for the hand coding of responses
+# df |>
+#   select(response_id, response, response_redacted, response_id) |>
+#   filter(!is.na(response_id)) |>
+#   write.xlsx("linked_messages/output/linked_responses_to_hand_code_081324.xlsx")
+
+# cleaning of credit messages: if credit_message_dummy is NA, it is effectively 0
+df <- df |> 
+  mutate(credit_message_dummy = ifelse(is.na(credit_message_dummy), 0, credit_message_dummy))
+
+# bringing in hand coding of responses
+responses_hand_coded <- read.xlsx("linked_messages/output/linked_responses_hand_coded_081324_v2.xlsx")
+
+responses_hand_coded <- responses_hand_coded |>
+  select(response_id, response_substantive, response_asks_for_meeting_w_lender, response_request_count, customer_name_used,
+         lender_name_given)
+
+df <- df |> 
+  left_join(responses_hand_coded, by = "response_id")
+
+# creating some variables
+df <- df |> 
+  mutate(response_dummy = ifelse(!is.na(response), 1, 0),
+         message_num = as.numeric(str_extract(unique_id, "[0-9]{1,2}$"))) |> 
+  group_by(unique_id) |> 
+  mutate(response_num = sum(response_dummy, na.rm = TRUE)) |>
+  ungroup()
+
+
+```
+
+# Pilot Basics
+
+### Messages sent
+
+```{r}
+
+messages_sent <- df |> 
+  distinct(unique_id) |>
+  nrow()
+
+responses_unique <- df |> 
+  distinct(unique_id, .keep_all = TRUE) |>
+  summarise(sum(response_dummy))
+
+respones_overall <- df |> 
+  summarise(sum(response_dummy))
+  
+```
+
+So far
+
+-   we have sent out `r messages_sent` messages
+
+-   `r responses_unique` of those messages received responses
+
+-   We've gotten `r respones_overall` responses overall, due to some messages getting multiple responses
+
+### Bank-side data
+
+```{r}
+
+num_banks <- df |> 
+  distinct(cert) |> 
+  nrow()
+
+```
+
+We have reached out to `r num_banks` banks and financial institutions. So far they have received somewhere between 1 and 16 messages. The pilot design was for all banks to receive somewhere between 5 and 20 messages.
+
+```{r}
+df |> 
+  distinct(unique_id, .keep_all = TRUE) |> 
+  group_by(cert) |> 
+  summarise(n = n()) |>
+  ungroup() |> 
+  ggplot(aes(x = n)) + 
+  geom_histogram(bins = 30) + 
+  labs(
+    title = "Number of Messages per Financial Institution",
+    x = "Number of Messages",
+    y = "Frequency"
+  )
+```
+
+### Characteristics of senders
+
+```{r}
+
+df |> 
+  distinct(unique_id, .keep_all = TRUE) |> 
+  mutate(`Race-Gender` = ifelse(race == "white", "White Male", "Black Female")) |> 
+  pie_chart("Race-Gender") + 
+  labs(
+    title = "Break down of messages sent by Race/Gender"
+  )
+  
+df |> 
+  distinct(unique_id, .keep_all = TRUE) |> 
+  pie_chart("industry") + 
+  labs(
+    title = "Break down of messages sent by Industry"
+  )
+
+
+df |> 
+  mutate(
+    Industry = case_when(
+    industry == "daycare" ~ "Daycare",
+    industry == "restaurant" ~ "Restaurant",
+    industry == "trucking" ~ "Trucking"
+  ),
+    `Loan Amount` = case_when(
+      loan_amount == "highloan" ~ "High Loan",
+      loan_amount == "lowloan" ~ "Low Loan",
+      loan_amount == "middleloan" ~ "Medium Loan"
+    )
+  ) |>
+  distinct(unique_id, .keep_all = TRUE) |>
+  ggplot(aes(x = loan_amount_num, fill = `Loan Amount`)) + 
+  geom_histogram(bins = 30) + 
+  scale_x_continuous(labels = label_number(scale = 1e-3, suffix = "K")) + 
+  facet_wrap(~Industry) + 
+  labs(
+    title = "Distribution of Loan Amounts by Industry",
+    x = "Loan Amount",
+    y = "Count"
+  )
+```
+
+# Bank responses
+
+Response rates by bank. Most banks never respond, but there is still lots of variation.
+
+```{r}
+# histogram of number of responses by person
+df |> 
+  distinct(unique_id, .keep_all = TRUE) |> 
+  group_by(cert) |>
+  summarise(response_prob = sum(!is.na(response))/n()) |>
+  ggplot(aes(response_prob)) +
+  geom_histogram(binwidth = 0.1) +
+  labs(title = "Response Rate by Bank",
+       x = "Response Rate",
+       y = "Number of Banks")
+```
+
+It doesn't look like banks stop responding after only a few messages.
+
+```{r}
+
+df |> 
+  group_by(message_num) |> 
+  summarise(response_mean = sum(response_dummy)/n()) |>
+  ungroup() |> 
+  ggplot(aes(message_num, response_mean)) +
+  geom_point() +
+  labs(title = "Response Rate by Message Number",
+       x = "Message Number",
+       y = "Probability of Receiving a Response")
+
+```
+
+Frequency, on the other hand, does seem to matter.
+
+```{r}
+
+feols(response_dummy ~ message_days_gap, df) |> 
+  etable()
+
+df |> 
+  distinct(unique_id, .keep_all = TRUE) |> 
+  group_by(message_days_gap) |> 
+  mutate(message_days_gap_n = paste(message_days_gap, "\n(N = ", n(), ")", sep = "")) |> 
+  ungroup() |> 
+  group_by(message_days_gap_n) |> 
+  summarise(response_dummy = mean(response_dummy, na.rm = TRUE)) |> 
+  ggplot(aes(x = message_days_gap_n, y = response_dummy)) + 
+  geom_point() +
+  labs(
+    title = "Response rate by spacing between messages", 
+     x = "Average gap between messages", 
+     y = "Mean Response"
+    )
+```
+
+```{r}
+
+feols(response_dummy ~ race + loan_amount_num + industry + bus_qual, 
+               df |> distinct(unique_id, .keep_all = TRUE)) |> 
+  etable() |> 
+  kable()
+```
+
+```{r}
+
+feols(response_num ~ race + loan_amount_num + industry + bus_qual, 
+               df |> distinct(unique_id, .keep_all = TRUE)) |> 
+  etable() |> 
+  kable()
+
+```
+
+
+# Text in Messages
+
+```{r}
+#### TEXT ANALYSIS #### 
+
+# word count
+df <- df |> 
+  mutate(word_count = str_count(response_redacted, "\\w+"))
+
+mod1 <- feols(word_count ~ race + loan_amount_num + industry + bus_qual, df)
+mod2 <- feols(response_substantive ~ race + loan_amount_num + industry + bus_qual, df)
+mod3 <- feols(response_asks_for_meeting_w_lender ~ race + loan_amount_num + industry + bus_qual, df)
+mod4 <- feols(response_request_count ~ race + loan_amount_num + industry + bus_qual, df)
+mod5 <- feols(customer_name_used ~ race + loan_amount_num + industry + bus_qual, df)
+mod6 <- feols(lender_name_given ~ race + loan_amount_num + industry + bus_qual, df)
+
+etable(mod1, mod2, mod3, mod4, mod5, mod6) |> kable()
+
+# data(stop_words)
+# 
+# dft <- df |> 
+#   unnest_tokens(bigram, response_redacted, token = "ngrams", n = 2) |> 
+#   filter(!is.na(bigram))
+```

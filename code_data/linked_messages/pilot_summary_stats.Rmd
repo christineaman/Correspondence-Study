@@ -20,7 +20,9 @@ rm(list = ls())
 knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
 
 # your directiory here
-working_dir <- "../../code_data"
+getwd()
+working_dir <- "/Users/christineaman/Dropbox/Correspondence Study/Correspondence-Study/code_data"
+#working_dir <- "/Dropbox/Correspondence Study/Correspondence-Study/code_data/input/"
 
 library(tidyverse)
 library(openxlsx)
@@ -111,14 +113,15 @@ summarize_categorical <- function(df, variable) {
 ```{r data_loading}
 
 #### BRINGING IN AND CLEANING DATA ####
-
 setwd(working_dir)
 
 df1 <- read.xlsx("linked_messages/input/Linked_Messages_v2_081324.xlsx", sheet = "emails_appended")
 df2 <- read.xlsx("linked_messages/input/Linked_Messages_v2_081324.xlsx", sheet = "vmc_appended")
 
+
 # getting schedule just to get treatment-related variable for each observation
-#schedule <- read.xlsx("output/pilot_schedule_v7_full.xlsx")
+
+schedule <- read.xlsx("output/pilot_schedule_v7_full.xlsx")
 schedule <- read.xlsx("output/pilot_schedule_v4_to_v12_full_081324.xlsx")
 
 schedule <- schedule |> 
@@ -449,14 +452,25 @@ df |>
        y = "Response Rate")
 
 ```
-
 ```{r}
 
-feols(response_dummy ~ race + loan_amount_num + industry + bus_qual, 
-               df |> distinct(unique_id, .keep_all = TRUE)) |> 
-  etable() |> 
+"response dummy" <- feols(response_dummy ~ race + loan_amount_num + industry + bus_qual, 
+                              df |> distinct(unique_id, .keep_all = TRUE))
+dict <- c(
+  response_dummy = "Response Dummy",
+  race = "Race",
+  loan_amount_num = "Loan Amount",
+  industryrestaurant = "Industry: Restaurant",
+  industrytrucking = "Industry: Trucking",
+  bus_quallowqual = "Business Qualification: Low"
+)
+# Create the table with the model name as the title
+etable(`response dummy`, dict = dict) |> 
   kable()
+
 ```
+
+
 
 ```{r}
 
@@ -476,14 +490,30 @@ feols(response_num ~ race + loan_amount_num + industry + bus_qual,
 df <- df |> 
   mutate(word_count = str_count(response_redacted, "\\w+"))
 
-mod1 <- feols(word_count ~ race + loan_amount_num + industry + bus_qual, df)
-mod2 <- feols(response_substantive ~ race + loan_amount_num + industry + bus_qual, df)
-mod3 <- feols(response_asks_for_meeting_w_lender ~ race + loan_amount_num + industry + bus_qual, df)
-mod4 <- feols(response_request_count ~ race + loan_amount_num + industry + bus_qual, df)
-mod5 <- feols(customer_name_used ~ race + loan_amount_num + industry + bus_qual, df)
-mod6 <- feols(lender_name_given ~ race + loan_amount_num + industry + bus_qual, df)
+"model 1" <- feols(word_count ~ race + loan_amount_num + industry + bus_qual, df)
+"model 2" <- feols(response_substantive ~ race + loan_amount_num + industry + bus_qual, df)
+"model 3" <- feols(response_asks_for_meeting_w_lender ~ race + loan_amount_num + industry + bus_qual, df)
+"model 4" <- feols(response_request_count ~ race + loan_amount_num + industry + bus_qual, df)
+"model 5" <- feols(customer_name_used ~ race + loan_amount_num + industry + bus_qual, df)
+"model 6"<- feols(lender_name_given ~ race + loan_amount_num + industry + bus_qual, df)
 
-etable(mod1, mod2, mod3, mod4, mod5, mod6) |> kable()
+
+dict <- c(
+  race = "Race",
+  loan_amount_num = "Loan Amount",
+  industry = "Industry",
+  bus_qual = "Business Qualification",
+  word_count = "Word Count",
+  response_substantive = "Response Substantive",
+  response_asks_for_meeting_w_lender = "Asks for Meeting with Lender",
+  response_request_count = "Response Request Count",
+  customer_name_used = "Customer Name Used",
+  lender_name_given = "Lender Name Given"
+)
+
+
+
+etable(`model 1`, `model 2`, `model 3`, `model 4`, `model 5`, `model 6`, dict = dict) |> kable()
 
 # data(stop_words)
 # 
@@ -491,3 +521,9 @@ etable(mod1, mod2, mod3, mod4, mod5, mod6) |> kable()
 #   unnest_tokens(bigram, response_redacted, token = "ngrams", n = 2) |> 
 #   filter(!is.na(bigram))
 ```
+
+
+
+
+
+
